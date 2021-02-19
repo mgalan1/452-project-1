@@ -19,7 +19,9 @@ void dispatcher(void);
 void launch();
 static void enableInterrupts();
 static void check_deadlock();
-
+/* the  table  that  holds  the  function  pointers  for  the  interrupt  handlers */
+// We need this for interrupt handling, but it won't compile - This was added by Arianna
+// void (*int_vec[NUM_INTS])(int dev, void * unit);
 
 /* -------------------------- Globals ------------------------------------- */
 
@@ -30,6 +32,10 @@ int debugflag = 1;
 proc_struct ProcTable[MAXPROC];
 
 /* Process lists  */
+struct readyProcNode *readyList;
+
+/* Linked list to keep track of zombie children - Added by Arianna */
+struct zombieNode *zombieList;
 
 /* current process ID */
 proc_ptr Current;
@@ -49,11 +55,11 @@ unsigned int next_pid = SENTINELPID;
 
    This function was added in by Arianna on 2/1/2021. 
 ------------------------------------------------------------------------ */
-/*void insertRL()
+void insertRL(proc_ptr proc)
 {
    proc_ptr walker, previous; //pointers to PCB
    previous = NULL;
-   walker = ReadyList;
+   walker = readyList;
    while (walker != NULL && walker->priority <= proc->priority ){
       previous = walker;
       walker = walker->next_proc_ptr;
@@ -61,8 +67,8 @@ unsigned int next_pid = SENTINELPID;
 
    if (previous == NULL){
       //process goes at front of ReadyList 
-      proc->next_proc_ptr = ReadyList;
-      ReadyList = proc;
+      proc->next_proc_ptr = readyList;
+      readyList = proc;
    }
    else {
       // Process goes after previous 
@@ -70,8 +76,7 @@ unsigned int next_pid = SENTINELPID;
       proc->next_proc_ptr = walker;
    } 
    return;
-} *//* insertRL */
-
+} 
 
 /* ------------------------------------------------------------------------
    Name - startup
@@ -87,14 +92,16 @@ void startup()
    int result; /* value returned by call to fork1() */
 
    /* initialize the process table */
+   // Code to loop over PCB array
 
    /* Initialize the Ready list, etc. */
    if (DEBUG && debugflag)
       console("startup(): initializing the Ready & Blocked lists\n");
-   //ReadyList = NULL;
+   readyList = NULL;
 
    /* Initialize the clock interrupt handler */
-   // We need to use sysclock provided by USLOSS simulator to check the time of how many microseconds have passed
+   // Line below added in by Arianna
+   int_vec[CLOCK_DEV] = clock_handler();  //function pointer is used here
 
 
    /* startup a sentinel process */
@@ -111,7 +118,7 @@ void startup()
    /* start the test process */
    if (DEBUG && debugflag)
       console("startup(): calling fork1() for start1\n");
-   result = fork1("start1", start1, NULL, 2 * USLOSS_MIN_STACK, 1);
+   result = fork1("start1", start1, NULL, 4 * USLOSS_MIN_STACK, 1);
    if (result < 0) {
       console("startup(): fork1 for start1 returned an error, halting...\n");
       halt(1);
@@ -151,14 +158,20 @@ void finish()
 int fork1(char *name, int (*f)(char *), char *arg, int stacksize, int priority)
 {
    int proc_slot;
+   
+   // TODO need to call malloc() in here
 
    if (DEBUG && debugflag)
       console("fork1(): creating process %s\n", name);
 
    /* test if in kernel mode; halt if in user mode */
-
+   int isKernel = check_kernel_mode(); 
 
    /* Return if stack size is too small */
+   if (stacksize < USLOSS_MIN_STACK) { // Added in by Arianna 
+      console("The stack size was too small");
+      return -2;
+   }
 
    /* find an empty slot in the process table */
    /* Block of code added in by Arianna 
@@ -177,6 +190,8 @@ int fork1(char *name, int (*f)(char *), char *arg, int stacksize, int priority)
       pid_count++;
    }
 
+   //Assuming we have found the index in the process table  ProcTable  to  maintain  your  new  processstackptr = malloc(stacksize);
+
    /* Return if process table is full */ 
    // Added by Arianna
    if ( pid_count >= MAXPROC ){
@@ -189,6 +204,7 @@ int fork1(char *name, int (*f)(char *), char *arg, int stacksize, int priority)
 
    /* fill-in entry in process table */
    ProcTable[proc_slot].pid = next_pid++; // Line added in by Arianna
+
    if ( strlen(name) >= (MAXNAME - 1) ) {
       console("fork1(): Process name is too long.  Halting...\n");
       halt(1);
@@ -215,8 +231,8 @@ int fork1(char *name, int (*f)(char *), char *arg, int stacksize, int priority)
    /* for future phase(s) */
    p1_fork(ProcTable[proc_slot].pid);
 
-   //added in by arianna so we can compile the program
-   return proc_slot; // Is proc_slot the process ID of the created child? 
+   // Return the PID value
+   return ProcTable[proc_slot].pid; 
 
 } /* fork1 */
 
@@ -263,24 +279,12 @@ void launch()
    ------------------------------------------------------------------------ */
 int join(int *code)
 {
-
-   // Code in method added by Arianna. I am not confident about what i've written.
-   // I included the fork function because it mentions a child process being forked
-
-   pid_t pid = fork();
-
-   if (pid < 0) // The fork has failed
-   {
-      return -1; // ?? Don't know what else to return?
-   }
-   else if (pid == 0) // The child process still exists?
-   {
-      // Not sure how to check in here if the process was zapped in join?
-      return -1; 
-   }
-   
-  return -2; // At this point, the process has no children?
-
+   /*
+   We need something like this:
+      *code = kid_ptr->exit_code;
+      return kid_pid;
+   */
+   return 0;
 } /* join */
 
 
@@ -295,10 +299,18 @@ int join(int *code)
    ------------------------------------------------------------------------ */
 void quit(int code)
 {
-   // Probably need to call the dispatcher code in here
-   kill(code,SIGKILL); // Stop the child process by calling kill
+   // Check if there is an active child process - If so, then call halt(1)
+   // Added in by Arianna
+   if (Current->child_proc_ptr) //Don't know if we should be checking anything else with child_proc_ptr
+   {
+      halt(1);
+   }
 
-   p1_quit(Current->pid);
+   //Change the status of the current running process to quit 
+   p1_quit(Current->status);
+
+   //TODO Update ReadyList and ZombieList
+
 } /* quit */
 
 
@@ -316,8 +328,7 @@ void dispatcher(void)
 {
    proc_ptr next_process;
 
-   // We need to have the priory based scheduling encoded in the algorithm
-   // Can be accomplished with linked list of priority information
+   // We need to have the priority based scheduling using a linked list
 
    p1_switch(Current->pid, next_process->pid);
 } /* dispatcher */
@@ -345,14 +356,6 @@ int sentinel (char * dummy)
    }
 } /* sentinel */
 
-
-/* Added in by Arianna 2/1/2021 
-   This method is called in check_leadlock()
-*/
-int check_io()
-{
-   return 0;
-}
 
 /* check to determine if deadlock has occurred... */
 //Code added in by Arianna 2/1/2021
@@ -389,3 +392,24 @@ void disableInterrupts()
     /* We ARE in kernel mode */
     psr_set( psr_get() & ~PSR_CURRENT_INT );
 } /* disableInterrupts */
+
+
+/*
+ * This function enables interrupts.
+ * This was created by Arianna
+ */
+/*
+void enableInterrupts()
+{
+   //TODO Add code here
+
+} /* enableInterrupts */
+
+
+// This function is needed to implement the round-robin scheduling policy
+// This was created by Arianna
+/*void clock_handler(int dev, void * unit)
+{
+   //TODO Add code here
+
+}*/
