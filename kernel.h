@@ -8,7 +8,6 @@ typedef struct proc_struct * proc_ptr;
 struct readyProcNode {
    int priority;
    struct readyProcNode *nextProc;
-
 };
 
 
@@ -56,5 +55,8 @@ union psr_values {
 #define SENTINELPID 1
 #define SENTINELPRIORITY LOWEST_PRIORITY
 #define EMPTY 0 // Added in by Arianna
+#define QUIT -1
+#define READY 1
+#define BLOCKED 2
 
 

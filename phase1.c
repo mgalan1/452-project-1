@@ -19,9 +19,7 @@ void dispatcher(void);
 void launch();
 static void enableInterrupts();
 static void check_deadlock();
-/* the  table  that  holds  the  function  pointers  for  the  interrupt  handlers */
-// We need this for interrupt handling, but it won't compile - This was added by Arianna
-// void (*int_vec[NUM_INTS])(int dev, void * unit);
+
 
 /* -------------------------- Globals ------------------------------------- */
 
@@ -32,7 +30,7 @@ int debugflag = 1;
 proc_struct ProcTable[MAXPROC];
 
 /* Process lists  */
-struct readyProcNode *readyList;
+struct proc_struct *readyList; 
 
 /* Linked list to keep track of zombie children - Added by Arianna */
 struct zombieNode *zombieList;
@@ -43,6 +41,8 @@ proc_ptr Current;
 /* the next pid to be assigned */
 unsigned int next_pid = SENTINELPID;
 
+/* the  table  that  holds  the  function  pointers  for  the  interrupt  handlers */
+void clock_handler(int dev, void *unit);
 
 /* -------------------------- Functions ----------------------------------- */
 /*------------------------------------------------------------------------
@@ -101,8 +101,7 @@ void startup()
 
    /* Initialize the clock interrupt handler */
    // Line below added in by Arianna
-   int_vec[CLOCK_DEV] = clock_handler();  //function pointer is used here
-
+   int_vec[CLOCK_DEV] = clock_handler;  //function pointer is used here
 
    /* startup a sentinel process */
    if (DEBUG && debugflag)
@@ -165,12 +164,28 @@ int fork1(char *name, int (*f)(char *), char *arg, int stacksize, int priority)
       console("fork1(): creating process %s\n", name);
 
    /* test if in kernel mode; halt if in user mode */
-   int isKernel = check_kernel_mode(); 
+   if((PSR_CURRENT_MODE & psr_get()) == 0) {
+      // In user mode
+      console("User mode is on\n");
+      halt(1);
+   } 
+   else
+   {
+      /* We ARE in kernel mode */
+      psr_set( psr_get() & ~PSR_CURRENT_INT );
+   }
 
    /* Return if stack size is too small */
-   if (stacksize < USLOSS_MIN_STACK) { // Added in by Arianna 
+   if (stacksize < USLOSS_MIN_STACK) { // Added in by Arianna - Got an abort trap here
       console("The stack size was too small");
       return -2;
+   }
+
+   struct proc_struct *newNode = NULL; //creates a new node for the linked list
+   newNode = malloc(sizeof(struct proc_struct));
+   if(newNode==NULL){
+      fprintf(stderr, "out of memory!\n");
+      exit(1);
    }
 
    /* find an empty slot in the process table */
@@ -249,7 +264,7 @@ void launch()
    int result;
 
    if (DEBUG && debugflag)
-      console("launch(): started\n");
+      console("launch(): started\n"); 
 
    /* Enable interrupts */
    enableInterrupts(); 
@@ -262,7 +277,10 @@ void launch()
 
    quit(result); 
 
-} /* launch */
+}  
+/* launch */
+ 
+
 
 
 /* ------------------------------------------------------------------------
@@ -311,7 +329,10 @@ void quit(int code)
 
    //TODO Update ReadyList and ZombieList
 
-} /* quit */
+} 
+
+
+/* quit */
 
 
 /* ------------------------------------------------------------------------
@@ -324,14 +345,69 @@ void quit(int code)
    Returns - nothing
    Side Effects - the context of the machine is changed
    ----------------------------------------------------------------------- */
-void dispatcher(void)
+ void dispatcher(void)
 {
    proc_ptr next_process;
 
-   // We need to have the priority based scheduling using a linked list
+/*    // We need to have the round priority based scheduling using a linked list here 
+   // We also need to perform a context switch in here
+   if(Current != NULL)
+   {
+      // There is a dispatcher
+      console("Current dispatcher: %s\n", Current->name); 
+   }
+   else
+   {
+      // There is not a dispatcher
+      USLOSS_Console("Dispatcher is called: NULL\n"); 
+   }
 
+   proc_ptr next_process = NULL;
+
+   if((PSR_CURRENT_MODE & psr_get()) == 0) {
+      //not in kernel mode
+      console("Kernel Error: Not in kernel mode, may not disable interrupts\n");
+      halt(1);
+  } 
+   int time;
+
+   USLOSS_DeviceInput(0, 0, &time);
+
+   if (Current== NULL || Current->status == QUIT)
+   {
+      proc_struct tempVal = RemoveLL();
+      Current = &tempVal;
+      USLOSS_DeviceInput(0, 0, &(Current->startedTime));
+      Current->status = BLOCKED;
+      p1_switch(-1, Current->pid);
+      USLOSS_ContextSwitch(NULL, &(Current->state));
+   }
+
+   else
+   {
+      proc_struct tempVal = RemoveLL();
+      next_process = &tempVal;
+
+      if(Current->status == BLOCKED)
+      {
+         Current->status = READY;
+
+         // Add to the linked list
+         insertRL(Current); 
+      }
+      next_process->status = BLOCKED;
+      
+      // We need to have the priority based scheduling using a linked list
+      console("Current process= %s, Next process= %s\n",Current->name,next_process->name); //DEBUGGING
+      p1_switch(Current->pid, next_process->pid);
+      enableInterrupts();
+      USLOSS_ContextSwitch(&(Current->state), &(next_process->state))
+
+   }
+ */
    p1_switch(Current->pid, next_process->pid);
-} /* dispatcher */
+
+}  /* dispatcher */
 
 
 /* ------------------------------------------------------------------------
@@ -359,12 +435,12 @@ int sentinel (char * dummy)
 
 /* check to determine if deadlock has occurred... */
 //Code added in by Arianna 2/1/2021
-static void check_deadlock()
+ static void check_deadlock()
 {
    if (check_io() == 1){
       return;
    }
-
+ 
    /* Checking if everyone is terminated
       Check the number of processes. 
    */
@@ -385,12 +461,12 @@ void disableInterrupts()
 {
   /* turn the interrupts OFF iff we are in kernel mode */
   if((PSR_CURRENT_MODE & psr_get()) == 0) {
-    //not in kernel mode
-    console("Kernel Error: Not in kernel mode, may not disable interrupts\n");
-    halt(1);
+      //not in kernel mode
+      console("Kernel Error: Not in kernel mode, may not disable interrupts\n");
+      halt(1);
   } else
-    /* We ARE in kernel mode */
-    psr_set( psr_get() & ~PSR_CURRENT_INT );
+      /* We ARE in kernel mode */
+      psr_set( psr_get() & ~PSR_CURRENT_INT );
 } /* disableInterrupts */
 
 
@@ -398,18 +474,40 @@ void disableInterrupts()
  * This function enables interrupts.
  * This was created by Arianna
  */
-/*
 void enableInterrupts()
 {
-   //TODO Add code here
+   /* turn the interrupts OFF iff we are in kernel mode */
+  if((PSR_CURRENT_MODE & psr_get()) == 0) {
+      //not in kernel mode
+      console("Not in kernel mode\n");
+      halt(1);
+  } else
+      /* We ARE in kernel mode */
+      psr_set( psr_get() | PSR_CURRENT_INT );
 
 } /* enableInterrupts */
 
 
 // This function is needed to implement the round-robin scheduling policy
 // This was created by Arianna
-/*void clock_handler(int dev, void * unit)
+void clock_handler(int dev, void * unit)
 {
-   //TODO Add code here
+   if((PSR_CURRENT_MODE & psr_get()) == 0) {
+      //not in kernel mode
+      console("Kernel Error: Not in kernel mode, may not disable interrupts\n");
+      halt(1);
+   }
 
-}*/
+    if (DEBUG && debugflag){
+
+      Current->startedTime = sys_clock();
+
+      if (Current->startedTime >= 80000)
+      {
+         dispatcher();
+      }
+
+      enableInterrupts();
+   }
+
+}
